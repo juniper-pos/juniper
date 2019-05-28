@@ -1,0 +1,469 @@
+class ZCL_JUNIPER_WBBDLD_OUTBOUND definition
+  public
+  final
+  create public .
+
+public section.
+
+  interfaces ZIF_JUNIPER_IDOC_TO_REST .
+protected section.
+private section.
+
+  methods __PROCESS_IDOC
+    importing
+      !IS_EDIDC type EDIDC .
+ENDCLASS.
+
+
+
+CLASS ZCL_JUNIPER_WBBDLD_OUTBOUND IMPLEMENTATION.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_JUNIPER_WBBDLD_OUTBOUND->ZIF_JUNIPER_IDOC_TO_REST~PROCESS_IDOCS
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IT_EDIDC                       TYPE        EDIDC_TT
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  method zif_juniper_idoc_to_rest~process_idocs.
+
+loop at it_edidc assigning field-symbol(<edidc>).
+      " Lock document for processing
+      zcl_juniper_idoc_to_rest=>lock_document(
+        exporting
+          iv_docnum = <edidc>-docnum
+        exceptions
+          cant_open = 1
+      ).
+
+      if sy-subrc eq 0.
+        " Read IDOC
+        __process_idoc( <edidc> ).
+      else.
+        " Not locked - leave for later processing
+      endif.
+    endloop.
+
+
+  endmethod.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_JUNIPER_WBBDLD_OUTBOUND->__PROCESS_IDOC
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IS_EDIDC                       TYPE        EDIDC
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  method __process_idoc.
+
+
+    types: begin of ty_article,
+
+             "identification
+             delete_date         type string,
+             delete_flag         type abap_bool,
+             material_type       type string,
+             material_group      type string,
+             department          type string,
+             material_cat        type string,
+             config_article      type string,
+             base_uom            type string,
+             product_hier        type string,
+             service_agreement   type string,
+             season_category     type string,
+             season_year         type string,
+             shelf_life_total    type float,
+             shelf_life_rem      type float,
+             storage_perc        type float,
+             shelf_life_ind      type string,
+             empties_bom         type abap_bool,
+
+             price_band_category type string,
+             price_ref_article   type string,
+             price_list_type     type string,
+
+             net_weight          type float,
+             content_uom         type string,
+
+
+             purchase_uom        type string,
+             purchase_uom_var    type string,
+             image               type string,
+             image_thumb         type string,
+             item_type           type string,
+           end of ty_article.
+
+
+
+*    types: begin of ty_uom,
+*             uom          type string,
+*             numerator    type i,
+*             denominator  type i,
+*             length       type float,
+*             width        type float,
+*             height       type float,
+*             uod          type string,
+*             volume       type float,
+*             volume_unit  type string,
+*             gross_weight type float,
+*             weight_unit  type string,
+*             order_unit   type abap_bool,
+*             issue_unit   type abap_bool,
+*           end of ty_uom.
+
+
+    types: begin of ty_condition,
+             store        type string,
+             uom          type string,
+             cond_type    type string,
+             end_date     type string,
+             end_time     type string,
+             start_date   type string,
+             start_time   type string,
+             promotion    type string,
+             free_for_use type string,
+             stock_count  type abap_bool,
+             sign         type string,
+             rate         type float,
+             amount       type float,
+             quantity     type float,
+             currency     type string,
+           end of ty_condition.
+
+
+
+    types: begin of ty_article_store,
+             "identification
+             store             type string,
+             sort              type string,
+             sale_from         type string,
+             sale_to           type string,
+             repeat            type string,
+             price_req         type abap_bool,
+             message_purch     type string,
+             date_status       type string,
+             sales_order_block type string,
+             propsal_block     type string,
+             discount_allowed  type abap_bool,
+             weight_article    type abap_bool,
+             price_incl_tax    type abap_bool,
+             price_autonomy    type abap_bool,
+             show_price        type abap_bool,
+             show_article      type abap_bool,
+             scales_group      type string,
+             alloc_block       type abap_bool,
+             repl_block        type abap_bool,
+             store_order_block type abap_bool,
+             tax_code          type string,
+
+           end of ty_article_store.
+
+    types: begin of ty_gtin,
+             uom       type string,
+             gtin      type string,
+             gtin_type type string,
+             main_gtin type abap_bool,
+           end of ty_gtin.
+
+    types: begin of ty_article_text,
+             language     type string,
+             article_text type string,
+             receipt_text type string,
+           end of ty_article_text.
+
+
+    types: begin of ty_pos_data,
+             article            type string,
+             article_data       type  ty_article,
+             article_store_data type standard table of ty_article_store with non-unique default key,
+*             uom_data           type standard table of ty_uom with non-unique default key,
+             condition_data     type standard table of ty_condition with non-unique default key,
+             gtin_data          type standard table of ty_gtin with non-unique default key,
+             article_text_data  type standard table of ty_article_text with non-unique default key,
+           end of ty_pos_data.
+
+
+
+    types: begin of ty_result,
+             status_code type i,
+             status_text type string,
+           end of ty_result.
+
+    data: begin of ls_result,
+            result type ty_result,
+          end of ls_result.
+
+    data:
+      begin of ls_data,
+        pos_data type table of ty_pos_data,
+      end of ls_data,
+
+      lt_edidd type edidd_tt.
+
+
+
+    field-symbols: <e1wbb01> type e1wbb01, " IDoc for Assortment Listing: Change Informatio
+                   <e1wbb02> type e1wbb02, " Assortment list IDoc: Master data
+                   <e1wbb03> type e1wbb03, " Assortment list IDoc: Unit of measure
+                   <e1wbb04> type e1wbb04, " Assortment list IDoc: EAN/UPC
+                   <e1wbb07> type e1wbb07, " Assortment list IDoc: Conditions per unit of measure
+                   <e1wbb08> type e1wbb08, " Assortment list IDoc: Condition value per unit of meas.
+                   <e1wbb09> type e1wbb09, " Assortment list IDoc: POS data
+                   <e1wbb10> type e1wbb10, " Assortment list IDoc: Text
+                   <e1wbb16> type e1wbb16. " Assortment list IDoc: Tax code,
+
+    " Read IDOC segments
+    call function 'EDI_SEGMENTS_GET_ALL'
+      exporting
+        document_number = is_edidc-docnum
+      tables
+        idoc_containers = lt_edidd
+      exceptions
+        others          = 3.
+    if sy-subrc <> 0.
+      message id sy-msgid type sy-msgty number sy-msgno with sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    endif.
+
+
+    loop at lt_edidd assigning field-symbol(<edidd>).
+
+      case <edidd>-segnam.
+        when 'E1WBB01'. "Assortment list IDoc: Identification
+
+          assign <edidd>-sdata to <e1wbb01> casting.
+
+
+          read table ls_data-pos_data assigning field-symbol(<pos_data>) with key article = <e1wbb01>-matnr.
+          if sy-subrc <> 0.
+            "new key: Article
+
+            append initial line to ls_data-pos_data assigning <pos_data>.
+            <pos_data>-article = <e1wbb01>-matnr.
+          endif.
+*          <pos_data>-store  = <e1wbb01>-locnr.
+
+          append initial line to <pos_data>-article_store_data assigning field-symbol(<article_store_data>).
+          <article_store_data>-store = <e1wbb01>-locnr.
+          <article_store_data>-sort = <e1wbb01>-bsort.
+
+
+        when 'E1WBB02'. "Assortment list IDoc: Master data
+
+          assign <edidd>-sdata to <e1wbb02> casting.
+
+          <pos_data>-article_data-delete_date = <e1wbb02>-liqdt.
+          <pos_data>-article_data-delete_flag = <e1wbb02>-lvorm.
+          <pos_data>-article_data-material_type = <e1wbb02>-mtart.
+          <pos_data>-article_data-material_group = <e1wbb02>-matkl.
+          <pos_data>-article_data-department = <e1wbb02>-abtnr.
+          <pos_data>-article_data-material_cat = <e1wbb02>-attyp.
+          <pos_data>-article_data-config_article = <e1wbb02>-satnr.
+          <pos_data>-article_data-base_uom = <e1wbb02>-basme.
+          <pos_data>-article_data-product_hier = <e1wbb02>-prdha.
+          <pos_data>-article_data-service_agreement = <e1wbb02>-servv.
+          <pos_data>-article_data-season_category = <e1wbb02>-saiso.
+          <pos_data>-article_data-season_year = <e1wbb02>-saisj.
+          <pos_data>-article_data-shelf_life_total = <e1wbb02>-mhdhb.
+          <pos_data>-article_data-shelf_life_rem = <e1wbb02>-mhdrz.
+          <pos_data>-article_data-storage_perc = <e1wbb02>-mhdlp.
+          <pos_data>-article_data-shelf_life_ind = <e1wbb02>-iprkz.
+          <pos_data>-article_data-empties_bom = <e1wbb02>-mlgut.
+          <pos_data>-article_data-price_band_category = <e1wbb02>-price_band.
+          <pos_data>-article_data-price_ref_article = <e1wbb02>-pr_ref_mat.
+          <pos_data>-article_data-price_list_type = <e1wbb02>-pltyp_p.
+          <pos_data>-article_data-net_weight = <e1wbb02>-ntgew.
+          <pos_data>-article_data-content_uom = <e1wbb02>-mara_inhme.
+          <pos_data>-article_data-purchase_uom = <e1wbb02>-mara_bstme.
+          <pos_data>-article_data-purchase_uom_var = <e1wbb02>-mara_vabme.
+
+          data(lv_article) = <pos_data>-article.
+          shift lv_article left deleting leading '0'.
+          <pos_data>-article_data-image = 'https://www.bohus.no/api/product/' && lv_article && '/large'.
+          <pos_data>-article_data-image_thumb = 'https://www.bohus.no/api/product/' && lv_article && '/thumb'.
+
+
+
+*              RetailTransactionItemType
+* Possible values:, Stock, Service, Alteration, Fee. FeeRefund, Deposit, DepositRefund, Tare, ItemCollection, warranty
+          case <e1wbb02>-mtart.
+            when 'ZDIE' or 'ZPO1' or 'ZPOS'.
+              <pos_data>-article_data-item_type = 'Service'.
+            when 'ZKMA'.
+             <pos_data>-article_data-item_type = 'Alteration'.
+            when others.
+             <pos_data>-article_data-item_type = 'Stock'.
+          endcase.
+
+
+
+        when 'E1WBB03'. "Assortment list IDoc: Unit of measure
+
+          assign <edidd>-sdata to <e1wbb03> casting.
+*          check sy-subrc = 0.
+*
+*          read table <pos_data>-uom_data transporting no fields with key uom = <e1wbb03>-meinh. "already added for this article?
+**          check sy-subrc <> 0.
+*          append initial line to <pos_data>-uom_data assigning field-symbol(<uom_data>).
+*          <uom_data>-uom = <e1wbb03>-meinh.
+*          <uom_data>-numerator = <e1wbb03>-umren.
+*          <uom_data>-denominator = <e1wbb03>-umrez.
+*          <uom_data>-length = <e1wbb03>-laeng.
+*          <uom_data>-width = <e1wbb03>-breit.
+*          <uom_data>-height = <e1wbb03>-hoehe.
+*          <uom_data>-uod = <e1wbb03>-meabm.
+*          <uom_data>-volume = <e1wbb03>-volum.
+*          <uom_data>-volume_unit = <e1wbb03>-voleh.
+*          <uom_data>-gross_weight = <e1wbb03>-brgew.
+*          <uom_data>-weight_unit = <e1wbb03>-gewei.
+*          <uom_data>-order_unit = <e1wbb03>-kzbstme.
+*          <uom_data>-issue_unit = <e1wbb03>-kzausme.
+
+
+
+        when 'E1WBB04'. "Assortment list IDoc: EAN/UPC
+          assign <edidd>-sdata to <e1wbb04> casting.
+*          check sy-subrc = 0.
+
+          read table <pos_data>-gtin_data transporting no fields with key uom = <e1wbb03>-meinh
+                                                                          gtin = <e1wbb04>-ean11. "already added for this article?
+          check sy-subrc <> 0.
+          append initial line to <pos_data>-gtin_data assigning  field-symbol(<gtin_data>).
+          <gtin_data>-uom = <e1wbb03>-meinh.
+          <gtin_data>-gtin = <e1wbb04>-ean11.
+          <gtin_data>-gtin_type = <e1wbb04>-eantp.
+          <gtin_data>-main_gtin = <e1wbb04>-hpean.
+
+        when 'E1WBB07'. "Assortment list IDoc: Conditions per unit of measure
+
+          assign <edidd>-sdata to <e1wbb07> casting.
+*          check sy-subrc = 0.
+
+          append initial line to <pos_data>-condition_data assigning field-symbol(<condition_data>).
+          <condition_data>-store = <e1wbb01>-locnr.
+          <condition_data>-uom = <e1wbb03>-meinh.
+          <condition_data>-cond_type = <e1wbb07>-kschl.
+          <condition_data>-end_date = <e1wbb07>-datbi.
+          <condition_data>-end_time = <e1wbb07>-etime.
+          <condition_data>-start_date = <e1wbb07>-datab.
+          <condition_data>-start_time = <e1wbb07>-stime.
+          <condition_data>-promotion = <e1wbb07>-aktnr.
+          <condition_data>-free_for_use = <e1wbb07>-fverw.
+          <condition_data>-stock_count = <e1wbb07>-stock_count.
+
+
+        when 'E1WBB08'. "Assortment list IDoc: Condition value per unit of meas.
+
+          assign <edidd>-sdata to <e1wbb08> casting.
+*          check sy-subrc = 0.
+
+*          cont. on condition data
+
+          <condition_data>-sign = <e1wbb08>-vorzn.
+          <condition_data>-rate = <e1wbb08>-ksatz.
+          <condition_data>-amount = <e1wbb08>-kwert.
+          <condition_data>-quantity = <e1wbb08>-kpein.
+          <condition_data>-currency = <e1wbb08>-curcy.
+
+        when 'E1WBB09'. "Assortment list IDoc: POS data
+          assign <edidd>-sdata to <e1wbb09> casting.
+
+          <article_store_data>-sale_from = <e1wbb09>-vkdab.
+          <article_store_data>-sale_to = <e1wbb09>-vkdbi.
+          <article_store_data>-repeat = <e1wbb09>-kwdht.
+          <article_store_data>-price_req = <e1wbb09>-prerf.
+          <article_store_data>-message_purch = <e1wbb09>-deink.
+          <article_store_data>-date_status = <e1wbb09>-mstde.
+          <article_store_data>-sales_order_block = <e1wbb09>-spvbc.
+          <article_store_data>-propsal_block = <e1wbb09>-spvbd.
+          <article_store_data>-discount_allowed = <e1wbb09>-rbzul.
+          <article_store_data>-weight_article = <e1wbb09>-wagar.
+          <article_store_data>-price_incl_tax = <e1wbb09>-primw.
+          <article_store_data>-price_autonomy = <e1wbb09>-phfil.
+          <article_store_data>-show_price = <e1wbb09>-prdru.
+          <article_store_data>-show_article = <e1wbb09>-aranz.
+          <article_store_data>-scales_group = <e1wbb09>-scagr.
+          <article_store_data>-alloc_block = <e1wbb09>-wauft.
+          <article_store_data>-repl_block = <e1wbb09>-wrepl.
+          <article_store_data>-store_order_block = <e1wbb09>-wstor.
+
+*          <article_store_data>-repeat = 'TESTING'.
+
+
+        when 'E1WBB10'.  "Assortment list IDoc: Text
+          assign <edidd>-sdata to <e1wbb10> casting.
+*          check sy-subrc = 0.
+
+          read table <pos_data>-article_text_data transporting no fields with key language = <e1wbb01>-lang_iso.
+          check sy-subrc <> 0.
+          append initial line to <pos_data>-article_text_data assigning field-symbol(<article_text_data>).
+          <article_text_data>-language = <e1wbb01>-lang_iso.
+          <article_text_data>-article_text = <e1wbb10>-maktm.
+          <article_text_data>-receipt_text = <e1wbb10>-maktm.
+
+
+        when 'E1WBB16'. "Assortment list IDoc: Tax code
+
+          assign <edidd>-sdata to <e1wbb16> casting.
+          <article_store_data>-tax_code = <e1wbb16>-mwskz.
+
+        when others.
+          continue. "segment is not mapped
+      endcase.
+
+    endloop.
+
+   data: lv_endpoint type rfcdest value 'JUNIPER'.
+    data(lo_api) = new zcl_juniper_rest_util( iv_endpoint = lv_endpoint ).
+
+*    Convert to json
+    data(lv_request) = /ui2/cl_json=>serialize(
+      data             = ls_data
+      pretty_name      = abap_true
+    ).
+
+* Send request
+    data(lv_uri) = conv string( 'api/serverscript/inbPOSdata/postPOSData' ).
+    try.
+        lo_api->exec_json_request(
+              exporting
+                iv_json_request  = lv_request
+                iv_uri           = lv_uri
+              importing
+                ev_json_response = data(lv_response)
+                ev_return_code   = data(lv_ret_code)
+            ).
+      catch cx_root.
+*      BREAK-POINT.
+    endtry.
+
+    if lv_ret_code between '200' and '299'.
+
+*      json request sent successfully: check response:
+      call method /ui2/cl_json=>deserialize "decode response
+        exporting
+          json        = lv_response
+          pretty_name = abap_true
+        changing
+          data        = ls_result.
+
+      if ls_result-result-status_code between 200 and 299.
+        data(lv_status) = conv edi_status( 12 ).
+        message i000(db) with |{ ls_result-result-status_text } ({ ls_result-result-status_code })| into data(lv_msg).
+      else.
+        lv_status = 11.
+        message e000(db) with |{ ls_result-result-status_text } ({ ls_result-result-status_code })| into lv_msg.
+      endif.
+    elseif lv_ret_code = 0.
+        lv_status = 11.
+      message w000(db) with |No response - resend idoc ({ lv_ret_code })| into lv_msg.
+    else.
+      lv_status = 11.
+      message e000(db) with |Failed to send to POS9 ({ lv_ret_code })| into lv_msg.
+    endif.
+
+    zcl_juniper_idoc_to_rest=>close_idoc_processing(
+      exporting
+        it_docnum = value #( ( is_edidc-docnum ) )
+        iv_status = lv_status
+    ).
+
+  endmethod.
+ENDCLASS.
