@@ -1,0 +1,8 @@
+interface ZIF_JUNIPER_IDOC_TO_REST
+  public .
+
+
+  methods PROCESS_IDOCS
+    importing
+      !IT_EDIDC type EDIDC_TT .
+endinterface.
