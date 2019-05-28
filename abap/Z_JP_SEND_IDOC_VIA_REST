@@ -1,0 +1,10 @@
+FUNCTION Z_JP_SEND_IDOC_VIA_REST .
+*"--------------------------------------------------------------------
+*"*"Local Interface:
+*"  TABLES
+*"      I_EDIDC STRUCTURE  EDIDC
+*"--------------------------------------------------------------------
+ " Process IDOCs
+  NEW zcl_juniper_idoc_to_rest( )->process_idocs( it_edidc = i_edidc[] ).
+
+ENDFUNCTION.
