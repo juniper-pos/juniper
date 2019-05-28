@@ -1,0 +1,198 @@
+class ZCL_JUNIPER_IDOC_TO_REST definition
+  public
+  final
+  create public .
+
+public section.
+
+  types:
+    tt_docnum type standard table of edi_docnum .
+
+  constants:
+    begin of gc_status,
+        err_no_further_proc type edi_status value '31',
+        dispatch_err        type edi_status value '04',
+        dispatch_ok         type edi_status value '12',
+      end of gc_status .
+
+  methods PROCESS_IDOCS
+    importing
+      !IT_EDIDC type EDIDC_TT .
+  class-methods LOCK_DOCUMENT
+    importing
+      !IV_DOCNUM type EDIDC-DOCNUM
+    exceptions
+      CANT_OPEN .
+  class-methods CLOSE_IDOC_PROCESSING
+    importing
+      !IT_DOCNUM type TT_DOCNUM optional
+      !IT_EDIDC type EDIDC_TT optional
+      !IV_STATUS type EDI_STATUS .
+protected section.
+private section.
+
+  TYPES:
+      BEGIN OF t_sender.
+        INCLUDE TYPE zp9_idoc_sender.
+    TYPES:
+      sender  TYPE REF TO zif_p9_idoc_to_rest,
+      t_edidc TYPE edidc_tt,
+      END OF t_sender,
+      tt_sender TYPE STANDARD TABLE OF t_sender.
+ENDCLASS.
+
+
+
+CLASS ZCL_JUNIPER_IDOC_TO_REST IMPLEMENTATION.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Static Public Method ZCL_JUNIPER_IDOC_TO_REST=>CLOSE_IDOC_PROCESSING
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IT_DOCNUM                      TYPE        TT_DOCNUM(optional)
+* | [--->] IT_EDIDC                       TYPE        EDIDC_TT(optional)
+* | [--->] IV_STATUS                      TYPE        EDI_STATUS
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD CLOSE_IDOC_PROCESSING.
+    DATA ls_edids TYPE edi_ds.
+
+    ls_edids-tabnam = 'EDI_DS'.
+    ls_edids-logdat = sy-datum.
+    ls_edids-logtim = sy-uzeit.
+    ls_edids-repid = sy-repid. "?
+    ls_edids-stamid = sy-msgid.
+    ls_edids-stamno = sy-msgno.
+    ls_edids-stapa1 = sy-msgv1.
+    ls_edids-stapa2 = sy-msgv2.
+    ls_edids-stapa3 = sy-msgv3.
+    ls_edids-stapa4 = sy-msgv4.
+
+    IF it_docnum IS SUPPLIED.
+      DATA(lt_docnum) = it_docnum.
+    ELSE.
+      LOOP AT it_edidc ASSIGNING FIELD-SYMBOL(<edidc>).
+        APPEND <edidc>-docnum TO lt_docnum.
+      ENDLOOP.
+    ENDIF.
+
+    LOOP AT lt_docnum ASSIGNING FIELD-SYMBOL(<docnum>).
+      ls_edids-docnum = <docnum>.
+
+      " Set status on IDOC
+      ls_edids-status = iv_status.
+      ls_edids-stamqu = 'SAP'.
+
+      CALL FUNCTION 'EDI_DOCUMENT_STATUS_SET'
+        EXPORTING
+          document_number = <docnum>
+          idoc_status     = ls_edids
+        EXCEPTIONS
+          OTHERS          = 0.
+
+      CASE iv_status.
+        WHEN gc_status-dispatch_err.
+          " Unable to send XML IDOC
+          CALL FUNCTION 'IDOC_ERROR_WORKFLOW_START'
+            EXPORTING
+              docnum    = <docnum>
+              eventcode = 'EDIO'
+            EXCEPTIONS
+              OTHERS    = 0.
+      ENDCASE.
+
+      " And close IDOC processing
+      CALL FUNCTION 'EDI_DOCUMENT_CLOSE_PROCESS'
+        EXPORTING
+          document_number = <docnum>
+        EXCEPTIONS
+          OTHERS          = 0.
+
+    ENDLOOP.
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Static Public Method ZCL_JUNIPER_IDOC_TO_REST=>LOCK_DOCUMENT
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_DOCNUM                      TYPE        EDIDC-DOCNUM
+* | [EXC!] CANT_OPEN
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD LOCK_DOCUMENT.
+    " Open IDOC for processing
+    CALL FUNCTION 'EDI_DOCUMENT_OPEN_FOR_PROCESS'
+      EXPORTING
+        document_number = iv_docnum
+      EXCEPTIONS
+        OTHERS          = 1.
+    IF sy-subrc NE 0.
+      RAISE cant_open.
+    ENDIF.
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_JUNIPER_IDOC_TO_REST->PROCESS_IDOCS
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IT_EDIDC                       TYPE        EDIDC_TT
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  method PROCESS_IDOCS.
+**********************************************************************
+*   Process IDOCs
+*   Delegate to plugins to handle each message type
+**********************************************************************
+    data:
+      lt_unprocessed type standard table of edi_docnum,
+      lt_sender      type tt_sender.
+
+    " Read processing classes
+    select *
+    from   zp9_idoc_sender
+    where  impl_class <> ' '
+    into   corresponding fields of table @lt_sender.
+
+    " Split idocs according to message type
+    loop at it_edidc assigning field-symbol(<edidc>).
+      if not line_exists( lt_sender[
+          mestyp = <edidc>-mestyp
+
+*          rcvprt = <edidc>-rcvprt
+*          rcvprn = <edidc>-rcvprn
+        ] ).
+        append <edidc>-docnum to lt_unprocessed.
+
+      else.
+        assign lt_sender[
+          mestyp = <edidc>-mestyp
+          rcvpor = <edidc>-rcvpor
+*          rcvprt = <edidc>-rcvprt
+*          rcvprn = <edidc>-rcvprn
+        ]-t_edidc to field-symbol(<t_edidc>).
+
+        append <edidc> to <t_edidc>.
+      endif.
+    endloop.
+
+    if lt_unprocessed is not initial.
+      " IDOC not relevant - no action taken
+      message e007(zbc_common) into data(lv_msg).
+
+      close_idoc_processing(
+        exporting
+          it_docnum =  lt_unprocessed
+          iv_status = gc_status-err_no_further_proc
+      ).
+
+      commit work.
+    endif.
+
+    " Process message type by message type
+    loop at lt_sender assigning field-symbol(<sender>).
+      check <sender>-t_edidc is not initial.
+
+      create object <sender>-sender type (<sender>-impl_class).
+
+      <sender>-sender->process_idocs( it_edidc = <sender>-t_edidc ).
+    endloop.
+
+  endmethod.
+ENDCLASS.
