@@ -146,7 +146,7 @@ CLASS ZCL_JUNIPER_IDOC_TO_REST IMPLEMENTATION.
 
     " Read processing classes
     select *
-    from   zp9_idoc_sender
+    from  zjp_idoc_sender
     where  impl_class <> ' '
     into   corresponding fields of table @lt_sender.
 
